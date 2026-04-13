@@ -1,0 +1,16 @@
+python prepare_filelists.py
+
+Step 1: 提取 F0
+运行 python preprocess_f0.py，确保所有 .wav 旁边都生成了 .f0.pt。
+
+Step 2: 共振峰扰动 (Timbre Perturbation)
+运行 python preprocess_perturbation.py，确保生成了对应的 _pert.wav 。
+
+Step 3: 生成训练列表
+运行你写的文本处理脚本，生成 configs/unisyn_base.json 里指向的 filelists/unisyn_train.txt 和 unisyn_val.txt。
+
+Step 4: 启动训练
+在终端中输入以下命令开始炼丹（注意指定你的 config 文件）：
+
+Bash
+python train.py -c configs/unisyn_base.json -m unisyn_base

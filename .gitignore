@@ -9,3 +9,44 @@ __pycache__
 build
 *.c
 monotonic_align/monotonic_align
+
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Training / evaluation outputs
+eval_pack/
+metric_results_all/
+metric_results_mcd_stable_NEW2/
+
+# Dataset
+dataset/
+
+# Checkpoints / model weights
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Audio / generated files
+*.wav
+*.mp3
+*.flac
+
+# OS files
+.DS_Store
+Thumbs.db
