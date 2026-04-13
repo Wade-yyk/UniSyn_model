@@ -1,3 +1,4 @@
+# My code is changed base on original vits repo below are detail information from that repo
 # VITS: Conditional Variational Autoencoder with Adversarial Learning for End-to-End Text-to-Speech
 
 ### Jaehyeon Kim, Jungil Kong, and Juhee Son
