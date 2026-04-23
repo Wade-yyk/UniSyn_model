@@ -198,7 +198,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         z_s_posterior, z_rst_posterior,
         z_s_mu, z_rst_mu, z_s_logs, z_rst_logs,
         prior_s_mu, prior_s_logs, prior_rst_mu, prior_rst_logs,
-        logw, pred_spk_logits, pred_pitch, pred_spk_adversary) = net_g(
+        logw, pred_spk_logits, pred_pitch, pred_spk_adversary, pred_pitch_prior) = net_g(
             pho_padded, pho_lengths, pitch_padded,
             note_dur_input_padded, align_dur_padded,
             pos_padded, style_ids, spec_padded, spec_lengths, spk_ids
@@ -292,7 +292,14 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             ) * hps.train.c_pert
 
             # UniSyn 总损失合并
-            loss_gen_all = loss_mel + loss_kl_s + loss_kl_rst + loss_gvae_s + loss_gvae_p + loss_dur + loss_fm + loss_adv_g + loss_pert
+            style_weight = style_ids.float().view(-1, 1, 1)  # [B,1,1]，TTS=0, SVS=1
+            # 手动计算加权的 pitch loss
+            pitch_err = F.mse_loss(pred_pitch_prior, real_f0_padded, reduction='none')
+            pitch_err = pitch_err * frame_mask * style_weight
+            min_T = min(pred_pitch_prior.size(2), real_f0_padded.size(2), frame_mask.size(2))
+            loss_gvae_p_prior = pitch_err.sum() / (frame_mask * style_weight).sum().clamp(min=1.0)
+            loss_gvae_p_prior = loss_gvae_p_prior * hps.train.c_gvae_p * 0.5
+            loss_gen_all = loss_mel + loss_kl_s + loss_kl_rst + loss_gvae_s + loss_gvae_p + loss_dur + loss_fm + loss_adv_g + loss_pert + loss_gvae_p_prior
 
     optim_g.zero_grad()
     scaler.scale(loss_gen_all).backward()

@@ -15,6 +15,24 @@ TTS_STYLE_ID = 0
 SR = 24000
 HOP_LENGTH = 300
 
+def compute_pos_from_notes(phones, notes):
+    """
+    根据音素和对应的音符，计算每个音素在其音符组内的相对位置
+    """
+    pos = []
+    i = 0
+    while i < len(phones):
+        cur_note = notes[i]
+        # 找出属于同一音符的所有音素
+        j = i
+        while j < len(phones) and notes[j] == cur_note:
+            j += 1
+        group_size = j - i
+        for rank in range(group_size):
+            pos.append((rank + 1) / group_size)  # 1/n, 2/n, ..., 1.0
+        i = j
+    return pos
+
 def sec_to_frames(sec: float) -> int:
     """将秒换算为帧数，至少保证有1帧，防止特征消失"""
     frames = int(round(sec * SR / HOP_LENGTH))
@@ -164,7 +182,7 @@ def parse_svs_transcriptions(path: str):
             pho = parts[2].split()
             notes = parts[3].split()
             durs = [sec_to_frames(float(x)) for x in parts[4].split()]
-            pos = [float(x) for x in parts[5].split()]
+            pos = compute_pos_from_notes(pho, notes)
 
             pitch_ids = [normalize_note_token(x) for x in notes]
 
@@ -324,6 +342,29 @@ def phone_to_pitch_id(phone: str) -> int:
         return int(m.group(1))
     return 0
 
+def compute_pos_from_syllables(phones):
+    """
+    TTS: 按拼音音节边界计算相对位置
+    声母（辅音、无数字结尾）+ 韵母（带数字结尾）构成一个音节
+    """
+    pos = []
+    i = 0
+    while i < len(phones):
+        # 找出当前音节的范围：从 i 开始，直到遇到带数字的音素（韵母）
+        j = i
+        while j < len(phones):
+            if re.search(r'[0-9]$', phones[j]):  # 遇到带声调的韵母
+                j += 1
+                break
+            j += 1
+        group_size = j - i
+        if group_size == 0:
+            group_size = 1
+            j = i + 1
+        for rank in range(group_size):
+            pos.append((rank + 1) / group_size)
+        i = j
+    return pos
 
 def build_tts_lines():
     # 目前你的 ProsodyLabeling 看起来集中在一个大文件里
@@ -349,7 +390,7 @@ def build_tts_lines():
         pitch_ids = [phone_to_pitch_id(p) for p in phones]
 
         # pos 先简单全 1
-        pos = [1.0] * len(phones)
+        pos = compute_pos_from_syllables(phones)
 
         if not (len(phones) == len(pitch_ids) == len(durs) == len(pos)):
             print(f"[WARN][TTS] length mismatch: {utt_id}")

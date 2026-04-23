@@ -459,6 +459,11 @@ class SynthesizerTrn(nn.Module):
             nn.ReLU(),
             nn.Conv1d(hidden_channels, n_speakers, 1)
         )
+        self.prior_pitch_predictor = nn.Sequential(
+            nn.Conv1d(self.z_rst_dim, hidden_channels, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(hidden_channels, 1, 1)
+        )
 
     def forward(self, pho, pho_lengths, pitch, note_dur_input, align_dur, pos, style_id, spec, spec_lengths, spk_id):
         # 1. 后验编码 (Posterior): 从音频中提取出完整的 z
@@ -485,12 +490,12 @@ class SynthesizerTrn(nn.Module):
         frame_hidden, frame_mask, _ = self.length_regulator(text_hidden, align_dur, y_lengths=spec_lengths)
         
         # d) 生成 z_rst 的先验
-        prior_rst_mu, prior_rst_logs = self.frame_prior_net(frame_hidden, frame_mask)
+        prior_rst_mu, prior_rst_logs = self.frame_prior_net(frame_hidden, frame_mask, style_id)
         
         # e) 生成 z_s 的先验 (基于 speaker ID)
         prior_s_mu = self.spk_emb(spk_id).unsqueeze(-1).expand(-1, -1, z_s_posterior.size(2)) * spec_mask
         # 论文提到 zs 几乎是不随时间变化的，且方差很小(0.01)，log(0.01) ≈ -4.6
-        prior_s_logs = (torch.zeros_like(prior_s_mu) - 2.3) * spec_mask 
+        prior_s_logs = (torch.zeros_like(prior_s_mu) - 4.6) * spec_mask 
 
         # 3. GVAE 预测 (分离监督)
         pred_spk_logits = self.spk_classifier(z_s_posterior)  # [B, n_speakers, T]
@@ -511,12 +516,15 @@ class SynthesizerTrn(nn.Module):
         # 加上梯度反转层，传给 adversarial 分类器
         z_rst_rev = grad_reverse(z_rst_posterior, alpha=1.0)
         pred_spk_adversary = self.spk_adversary(z_rst_rev)
+        # 从先验采样 z_rst（用于 prior pitch 监督）
+        prior_rst_sample = prior_rst_mu + torch.randn_like(prior_rst_mu) * torch.exp(prior_rst_logs.clamp(-10, 2))
+        pred_pitch_prior = self.prior_pitch_predictor(prior_rst_sample * frame_mask)
 
         return (o, ids_slice, spec_mask, frame_mask, 
                 z_s_posterior, z_rst_posterior, 
                 z_s_mu, z_rst_mu, z_s_logs, z_rst_logs,
                 prior_s_mu, prior_s_logs, prior_rst_mu, prior_rst_logs,
-                logw, pred_spk_logits, pred_pitch, pred_spk_adversary)
+                logw, pred_spk_logits, pred_pitch, pred_spk_adversary, pred_pitch_prior)
 
     def infer(self, pho, pho_lengths, pitch, note_dur, pos, style_id, spk_id,
           noise_scale=0.667, length_scale=1.0):
@@ -550,11 +558,11 @@ class SynthesizerTrn(nn.Module):
 
         frame_hidden, frame_mask, _ = self.length_regulator(text_hidden, dur_for_lr)
 
-        prior_rst_mu, prior_rst_logs = self.frame_prior_net(frame_hidden, frame_mask)
+        prior_rst_mu, prior_rst_logs = self.frame_prior_net(frame_hidden, frame_mask, style_id)
         z_rst = prior_rst_mu + torch.randn_like(prior_rst_mu) * torch.exp(prior_rst_logs) * noise_scale
 
         prior_s_mu = self.spk_emb(spk_id).unsqueeze(-1).expand(-1, -1, z_rst.size(2)) * frame_mask
-        prior_s_logs = (torch.zeros_like(prior_s_mu) - 2.3) * frame_mask
+        prior_s_logs = (torch.zeros_like(prior_s_mu) - 4.6) * frame_mask
         z_s = prior_s_mu + torch.randn_like(prior_s_mu) * torch.exp(prior_s_logs) * noise_scale
 
         z_combine = torch.cat([z_s, z_rst], dim=1)
@@ -768,8 +776,12 @@ class FramePriorNetwork(nn.Module):
             hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout)
         # 输出均值和方差，所以 out_channels * 2
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1) 
+        self.style_emb = nn.Embedding(2, hidden_channels)
 
-    def forward(self, x, x_mask):
+    def forward(self, x, x_mask, style_id=None):
+        if style_id is not None:
+            style_vec = self.style_emb(style_id).unsqueeze(-1)  # [B, H, 1]
+            x = x + style_vec
         x = self.encoder(x * x_mask, x_mask)
         stats = self.proj(x) * x_mask
         m, logs = torch.split(stats, stats.size(1)//2, dim=1)
