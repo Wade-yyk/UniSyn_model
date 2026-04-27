@@ -46,22 +46,30 @@ class UniSynTextAudioLoader(torch.utils.data.Dataset):
         
     def get_audio_text_pair(self, audiopath_and_text):
         # 解析 UniSyn 需要的统一特征
-        file_path, pho, pitch, note_dur, pos, style_id, spk_id = audiopath_and_text[0], audiopath_and_text[1], audiopath_and_text[2], audiopath_and_text[3], audiopath_and_text[4], audiopath_and_text[5], audiopath_and_text[6]
-        
+        #file_path, pho, pitch, note_dur, pos, style_id, spk_id = audiopath_and_text[0], audiopath_and_text[1], audiopath_and_text[2], audiopath_and_text[3], audiopath_and_text[4], audiopath_and_text[5], audiopath_and_text[6]
+        file_path  = audiopath_and_text[0]
+        pho        = audiopath_and_text[1]
+        pitch      = audiopath_and_text[2]
+        note_dur   = audiopath_and_text[3]   # 喂给 dp 的 note 条件
+        align_dur  = audiopath_and_text[4]   # 喂给 length regulator 的真实音素帧数
+        pos        = audiopath_and_text[5]
+        style_id   = audiopath_and_text[6]
+        spk_id     = audiopath_and_text[7]
         # 1. 提取音素 (pho)
         pho_tensor = self.get_text(pho)
         
-        pitch_ids = [int(x) for x in pitch.split(" ")]
-        align_dur_ids = [max(1, int(x)) for x in note_dur.split(" ")]
-        pos_ids = [float(x) for x in pos.split(" ")]
+        pitch_ids          = [int(x) for x in pitch.split(" ")]
+        note_dur_input_ids = [max(0, int(x)) for x in note_dur.split(" ")]   # TTS 是 0，SVS 是真实 note dur
+        align_dur_ids      = [max(1, int(x)) for x in align_dur.split(" ")]
+        pos_ids            = [float(x) for x in pos.split(" ")]
 
         style_val = int(style_id)
 
         # 给 DP 的输入时长
-        if style_val == 0:  # TTS
-            note_dur_input_ids = [0] * len(align_dur_ids)
-        else:               # SVS
-            note_dur_input_ids = align_dur_ids.copy()
+        # if style_val == 0:  # TTS
+        #     note_dur_input_ids = [0] * len(align_dur_ids)
+        # else:               # SVS
+        #     note_dur_input_ids = align_dur_ids.copy()
 
         if self.add_blank:
             pitch_ids = commons.intersperse(pitch_ids, 0)

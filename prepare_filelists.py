@@ -3,7 +3,9 @@ import re
 from pathlib import Path
 from text.phone_vocab import phone_to_id
 
-SVS_SPK_ID = 0
+# 建议改成两个不同的 spk_id，让 MC-VAE 的 speaker 子空间真正起作用。
+# 如果你暂时只想跑通，保持 0/0 + n_speakers=1 也能训，但论文里那套解耦故事就不成立。
+SVS_SPK_ID = 1
 TTS_SPK_ID = 0
 
 SVS_STYLE_ID = 1
@@ -19,6 +21,7 @@ def sec_to_frames(sec: float) -> int:
     """将秒换算为帧数，至少保证有1帧，防止特征消失"""
     frames = int(round(sec * SR / HOP_LENGTH))
     return max(1, frames)
+
 
 def normalize_phone_token(t: str) -> str:
     t = t.strip()
@@ -38,37 +41,19 @@ def normalize_phone_token(t: str) -> str:
         tone = m.group(2)
         t = f"{base}{tone}"
 
-    # 再做一轮特殊归并
     special_map = {
-        # 常见无调/缩写
         "ui": "uei",
         "un": "uen",
         "iu": "iou",
-
-        # 儿化后仍然可能残留的特殊形式
-        "ir1": "iii1",
-        "ir2": "iii2",
-        "ir3": "iii3",
-        "ir4": "iii4",
-        "ir5": "iii5",
-
+        "ir1": "iii1", "ir2": "iii2", "ir3": "iii3", "ir4": "iii4", "ir5": "iii5",
         "iiir4": "iii4",
-
-        # 特殊拼写兼容
         "io5": "iou5",
         "iour1": "iou1",
-        "ueir1": "uei1",
-        "ueir3": "uei3",
-        "ueir4": "uei4",
-
-        # y / w 作为介音时直接保留
-        "y": "y",
-        "w": "w",
-
-        # 特殊音节
+        "ueir1": "uei1", "ueir3": "uei3", "ueir4": "uei4",
+        "y": "y", "w": "w",
         "ng1": "ng1",
-        "pl": "SP",   # 先当停顿占位，后面你真想保留再单独加
-        "iyl4": "i4", # 先粗略规约，保证能跑
+        "pl": "SP",
+        "iyl4": "i4",
     }
 
     if t in special_map:
@@ -86,12 +71,8 @@ def phones_to_ids(tokens):
         ids.append(phone_to_id[t])
     return ids
 
+
 def normalize_note_token(note: str) -> int:
-    """
-    把:
-      C4, D#4/Eb4, A#3/Bb3, rest
-    转成整数 pitch id (近似 MIDI)
-    """
     note = note.strip()
     if note.lower() == "rest":
         return 0
@@ -106,7 +87,7 @@ def normalize_note_token(note: str) -> int:
         "F": 5, "F#": 6, "Gb": 6,
         "G": 7, "G#": 8, "Ab": 8,
         "A": 9, "A#": 10, "Bb": 10,
-        "B": 11
+        "B": 11,
     }
 
     if len(note) < 2:
@@ -126,12 +107,8 @@ def normalize_note_token(note: str) -> int:
 def normalize_utt_id(x: str) -> str:
     x = x.strip()
     x = x.replace("\\", "/")
-
-    # 如果这一行是完整 metadata，用第一列
     if "|" in x:
         x = x.split("|")[0].strip()
-
-    # 如果这一列里还带路径或 .wav，再继续清理
     x = Path(x).stem
     return x
 
@@ -146,9 +123,43 @@ def load_id_set(path: str) -> set:
     return ids
 
 
+# ---------- 计算 pos ----------
+
+def compute_pos_by_note(notes_str_list, note_durs_sec):
+    """
+    把连续相同 note + 相同 note_dur 的音素视为一个 syllable group，
+    pos = (rank_in_group) / group_size，范围 (0, 1]。
+    论文里说 pos 是 "rank / total"，这里就是这个意思。
+    """
+    n = len(notes_str_list)
+    pos = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while (j < n
+               and notes_str_list[j] == notes_str_list[i]
+               and abs(note_durs_sec[j] - note_durs_sec[i]) < 1e-6):
+            j += 1
+        group_size = j - i
+        for k in range(group_size):
+            pos[i + k] = (k + 1) / group_size
+        i = j
+    return pos
+
+
 # ---------- SVS 解析 ----------
 
 def parse_svs_transcriptions(path: str):
+    """
+    Opencpop transcriptions.txt 每行7列：
+      0: utt_id
+      1: text
+      2: phonemes (空格分隔)
+      3: notes (per phoneme)
+      4: note_durations  (秒)        <-- 之前被错当成 phoneme_dur
+      5: phoneme_durations (秒)      <-- 之前被错当成 pos
+      6: slur tag
+    """
     data = {}
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -163,12 +174,17 @@ def parse_svs_transcriptions(path: str):
             text = parts[1]
             pho = parts[2].split()
             notes = parts[3].split()
-            durs = [sec_to_frames(float(x)) for x in parts[4].split()]
-            pos = [float(x) for x in parts[5].split()]
+
+            note_durs_sec = [float(x) for x in parts[4].split()]   # 音符时长（秒）
+            pho_durs_sec  = [float(x) for x in parts[5].split()]   # 音素时长（秒）
+
+            note_dur_frames  = [sec_to_frames(d) for d in note_durs_sec]
+            align_dur_frames = [sec_to_frames(d) for d in pho_durs_sec]
 
             pitch_ids = [normalize_note_token(x) for x in notes]
+            pos = compute_pos_by_note(notes, note_durs_sec)
 
-            if not (len(pho) == len(pitch_ids) == len(durs) == len(pos)):
+            if not (len(pho) == len(pitch_ids) == len(align_dur_frames) == len(note_dur_frames) == len(pos)):
                 print(f"[WARN][SVS] length mismatch: {utt_id}")
                 continue
 
@@ -176,8 +192,9 @@ def parse_svs_transcriptions(path: str):
                 "text": text,
                 "pho": pho,
                 "pitch": pitch_ids,
-                "dur": durs,
-                "pos": pos
+                "note_dur": note_dur_frames,    # 喂给 dp 的 note 条件
+                "align_dur": align_dur_frames,  # 喂给 length regulator 的真实音素时长
+                "pos": pos,
             }
     return data
 
@@ -191,8 +208,7 @@ def build_svs_lines():
     print(f"[SVS] train ids: {len(train_ids)}")
     print(f"[SVS] val ids:   {len(val_ids)}")
 
-    train_lines = []
-    val_lines = []
+    train_lines, val_lines = [], []
 
     for utt_id, item in meta.items():
         wav_path = f"dataset/svs/wavs/{utt_id}.wav"
@@ -200,18 +216,16 @@ def build_svs_lines():
             print(f"[WARN][SVS] wav missing: {wav_path}")
             continue
 
-        if not (len(item['pho']) == len(item['pitch']) == len(item['dur']) == len(item['pos'])):
-            print(f"[WARN][SVS] length mismatch: {utt_id}")
-            continue
-
         phone_ids = phones_to_ids(item["pho"])
 
+        # 8 列：wav | pho | pitch | note_dur | align_dur | pos | style | spk
         line = "|".join([
             wav_path,
             " ".join(map(str, phone_ids)),
             " ".join(map(str, item["pitch"])),
-            " ".join(map(str, item["dur"])),
-            " ".join(map(str, item["pos"])),
+            " ".join(map(str, item["note_dur"])),
+            " ".join(map(str, item["align_dur"])),
+            " ".join(f"{x:.4f}" for x in item["pos"]),
             str(SVS_STYLE_ID),
             str(SVS_SPK_ID),
         ])
@@ -231,12 +245,6 @@ def build_svs_lines():
 # ---------- TTS 解析 ----------
 
 def parse_prosody_txt(path: str):
-    """
-    解析 000001-010000.txt
-    形式大致是：
-      000001\t文本
-      \tka2 er2 pu3 ...
-    """
     mapping = {}
     with open(path, "r", encoding="utf-8") as f:
         lines = [x.rstrip("\n") for x in f]
@@ -252,7 +260,6 @@ def parse_prosody_txt(path: str):
             parts = line.split("\t")
             utt_id = parts[0].strip()
 
-            # 下一行通常是拼音
             if i + 1 < len(lines):
                 py_line = lines[i + 1].strip()
                 if py_line.startswith("\t"):
@@ -273,8 +280,7 @@ def parse_interval_file(path: str):
     解析 Praat TextGrid 文本格式的 .interval
     返回:
       phones: list[str]
-      durs: list[float]
-    只保留非 sil 的 phone
+      durs:   list[int]   (帧数)
     """
     with open(path, "r", encoding="utf-8") as f:
         lines = [x.strip() for x in f if x.strip()]
@@ -282,11 +288,6 @@ def parse_interval_file(path: str):
     phones = []
     durs = []
 
-    # 找出所有带引号的 phone token，对应前两个数是 start/end
-    # 你的文件是：
-    # start
-    # end
-    # "phone"
     for i in range(len(lines) - 2):
         try:
             start = float(lines[i])
@@ -311,13 +312,8 @@ def parse_interval_file(path: str):
 
 def phone_to_pitch_id(phone: str) -> int:
     """
-    如果 phone 末尾有声调数字，就取该数字。
-    比如:
-      a2 -> 2
-      er2 -> 2
-      u3 -> 3
-      k -> 0
-      p -> 0
+    TTS 的 'tp' 用声调数字 1~5；轻声/无声调当 0。
+    注意：和 SVS 的 MIDI（一般 >=36）不重叠，可以共用同一个 emb_pitch。
     """
     m = re.search(r'([0-9])$', phone)
     if m:
@@ -326,7 +322,6 @@ def phone_to_pitch_id(phone: str) -> int:
 
 
 def build_tts_lines():
-    # 目前你的 ProsodyLabeling 看起来集中在一个大文件里
     prosody_map = parse_prosody_txt("dataset/tts/meta/ProsodyLabeling/000001-010000.txt")
 
     interval_files = sorted(Path("dataset/tts/meta/PhoneLabeling").glob("*.interval"))
@@ -334,7 +329,7 @@ def build_tts_lines():
     all_lines = []
 
     for interval_path in interval_files:
-        utt_id = interval_path.stem  # 000001
+        utt_id = interval_path.stem
         wav_path = f"dataset/tts/wavs/{utt_id}.wav"
         if not os.path.exists(wav_path):
             print(f"[WARN][TTS] wav missing: {wav_path}")
@@ -345,30 +340,35 @@ def build_tts_lines():
             print(f"[WARN][TTS] empty phones: {utt_id}")
             continue
 
-        # pitch 直接从 phone 的 tone 数字取
         pitch_ids = [phone_to_pitch_id(p) for p in phones]
 
-        # pos 先简单全 1
+        # TTS 没有真正的 note dur，全 0 占位喂给 dp
+        note_dur = [0] * len(phones)
+
+        # TTS 的 pos：没有 textgrid 给的 syllable 边界，做个粗略近似
+        # 这里把每个音素当作一个独立 syllable -> pos 全为 1.0
+        # 想做更细可以按 prosody_map 的 pinyin 切，但不是阻塞项，先简单处理
         pos = [1.0] * len(phones)
 
-        if not (len(phones) == len(pitch_ids) == len(durs) == len(pos)):
+        if not (len(phones) == len(pitch_ids) == len(durs) == len(note_dur) == len(pos)):
             print(f"[WARN][TTS] length mismatch: {utt_id}")
             continue
 
         phone_ids = phones_to_ids(phones)
 
+        # 8 列：wav | pho | pitch | note_dur | align_dur | pos | style | spk
         line = "|".join([
             wav_path,
             " ".join(map(str, phone_ids)),
             " ".join(map(str, pitch_ids)),
+            " ".join(map(str, note_dur)),
             " ".join(map(str, durs)),
-            " ".join(map(str, pos)),
+            " ".join(f"{x:.4f}" for x in pos),
             str(TTS_STYLE_ID),
             str(TTS_SPK_ID),
         ])
         all_lines.append(line)
 
-    # 简单切 95/5 做 train/val
     n = len(all_lines)
     split = max(1, int(n * 0.95))
     train_lines = all_lines[:split]

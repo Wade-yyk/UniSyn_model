@@ -519,7 +519,7 @@ class SynthesizerTrn(nn.Module):
                 logw, pred_spk_logits, pred_pitch, pred_spk_adversary)
 
     def infer(self, pho, pho_lengths, pitch, note_dur, pos, style_id, spk_id,
-          noise_scale=0.667, length_scale=1.0):
+          noise_scale=0.667, length_scale=1.0, force_dur=None):
         """
         推理模式
         - SVS: 可以传入真实 note_dur
@@ -527,7 +527,7 @@ class SynthesizerTrn(nn.Module):
         """
         text_hidden, _, text_mask = self.enc_p(pho, pitch, pho_lengths)
 
-        use_given_dur = note_dur is not None
+        #use_given_dur = note_dur is not None
 
         # 给 DP 的输入时长：如果没有，就喂全 0 占位
         if note_dur is None:
@@ -543,8 +543,8 @@ class SynthesizerTrn(nn.Module):
         w = torch.exp(logw) * text_mask * length_scale
 
         # 给 LengthRegulator 的展开时长
-        if use_given_dur:
-            dur_for_lr = torch.clamp(note_dur.long(), min=0)
+        if force_dur is not None:
+            dur_for_lr = torch.clamp(force_dur.long(), min=1)
         else:
             dur_for_lr = torch.clamp(torch.ceil(w.squeeze(1)).long(), min=1)
 
@@ -691,8 +691,9 @@ class UniSynDurationPredictor(nn.Module):
         style_id: [B] (风格 ID，0 for TTS, 1 for SVS)
         """
         # 调整额外特征的维度以拼接
-        note_dur = note_dur.unsqueeze(1) # [B, 1, T]
-        pos = pos.unsqueeze(1)           # [B, 1, T]
+        note_dur = note_dur.unsqueeze(1).float() # [B, 1, T]
+        note_dur = torch.log1p(note_dur)
+        pos = pos.unsqueeze(1).float()           # [B, 1, T]
         
         # 沿着通道维度拼接: [B, C+2, T]
         x = torch.cat([x, note_dur, pos], dim=1) 

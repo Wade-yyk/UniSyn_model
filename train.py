@@ -402,10 +402,11 @@ def evaluate(hps, generator, eval_loader, writer_eval, global_step):
                     # 或者直接在 infer 时增加 noise_scale 和 length_scale
                     print(f"[DEBUG] Duration too short ({cur_durs.sum()}), applying length_scale.")
                 
+                note_dur_arg = note_dur_input_padded if int(style_ids[0].item()) == 1 else None
                 y_hat, mask, _ = generator.infer(
                     pho_padded, pho_lengths, pitch_padded,
-                    align_dur_padded, pos_padded, style_ids, spk_ids,
-                    length_scale=1.2
+                    note_dur_arg, pos_padded, style_ids, spk_ids,
+                    length_scale=1.0,
                 )
             except Exception as e:
                 print(f"[ERROR] eval sample {batch_idx} failed: {e}")

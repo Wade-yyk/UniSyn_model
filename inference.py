@@ -104,11 +104,11 @@ def main():
     # 推理时给 infer 的时长
     # - 默认：用 align_dur 做 teacher-forced duration inference
     # - 如果是 TTS 且指定 --free_tts：传 None，测试自由时长预测
-    if args.free_tts and style_scalar == 0:
+    if style_scalar == 0:
         infer_note_dur = None
         print("当前模式：TTS 自由时长推理（note_dur=None）")
     else:
-        infer_note_dur = align_dur.unsqueeze(0).cuda()
+        infer_note_dur = note_dur_input.unsqueeze(0).cuda()
         print("当前模式：使用 align_dur 做时长条件推理")
 
     with torch.no_grad():
