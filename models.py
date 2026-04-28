@@ -478,11 +478,15 @@ class SynthesizerTrn(nn.Module):
         # b) 时长预测
         logw = self.dp(text_hidden, text_mask, note_dur_input, pos, style_id)
         w = torch.exp(logw) * text_mask
+        with torch.no_grad():
+            dur_for_lr = torch.clamp(torch.ceil(w.squeeze(1)), min=1).long()
         
         # c) 长度扩展对齐 (训练时如果有真实 duration 可以作为 y_lengths 传入进行强制对齐，此处假设基于预测的 w 对齐)
         # 实际工程中，如果是 TTS，你可以用 w 进行扩展；如果是 SVS，可以用真实的 note_dur 进行扩展
         # 为了简化演示，这里使用真实音频长度进行截断对齐
-        frame_hidden, frame_mask, _ = self.length_regulator(text_hidden, align_dur, y_lengths=spec_lengths)
+        frame_hidden, frame_mask, _ = self.length_regulator(
+            text_hidden, dur_for_lr, y_lengths=spec_lengths
+        )
         
         # d) 生成 z_rst 的先验
         prior_rst_mu, prior_rst_logs = self.frame_prior_net(frame_hidden, frame_mask)
