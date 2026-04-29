@@ -50,3 +50,5 @@ dataset/
 # OS files
 .DS_Store
 Thumbs.db
+monotonic_align/
+resources/
