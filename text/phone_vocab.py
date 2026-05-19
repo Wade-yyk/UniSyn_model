@@ -63,6 +63,15 @@ phone_symbols = [
     "ve1", "ve2", "ve3", "ve4", "ve5",
     "vn1", "vn2", "vn3", "vn4", "vn5",
 
+    # rare standalone finals / interjections in Hanyu Pinyin
+    # Appended to preserve all existing token ids used by trained checkpoints.
+    "ê1", "ê2", "ê3", "ê4", "ê5",
+    "m1", "m2", "m3", "m4", "m5",
+    "n1", "n2", "n3", "n4", "n5",
+    "ng2", "ng3", "ng4", "ng5",
+    "hm1", "hm2", "hm3", "hm4", "hm5",
+    "hng1", "hng2", "hng3", "hng4", "hng5",
+
     # no-tone forms / compatibility forms
     "a", "ai", "an", "ang", "ao",
     "e", "ei", "en", "eng", "er",
@@ -72,6 +81,7 @@ phone_symbols = [
     "u", "ua", "uai", "uan", "uang", "uei", "uen", "ueng", "uo",
     "ui", "un", "iu",
     "v", "van", "ve", "vn",
+    "ê", "ng", "hm", "hng",
 ]
 
 phone_to_id = {s: i for i, s in enumerate(phone_symbols)}
