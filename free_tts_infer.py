@@ -143,6 +143,32 @@ def pitch_ids_from_tokens(tokens):
     return ids
 
 
+def pos_from_tokens(tokens):
+    pos = [1.0] * len(tokens)
+    group = []
+
+    def flush_group():
+        if not group:
+            return
+        group_size = len(group)
+        for rank, idx in enumerate(group, start=1):
+            pos[idx] = rank / group_size
+        group.clear()
+
+    for idx, token in enumerate(tokens):
+        token = normalize_phone_token(token)
+        if token in {"SP", "AP"}:
+            flush_group()
+            pos[idx] = 1.0
+            continue
+        group.append(idx)
+        if re.search(r"[1-5]$", token):
+            flush_group()
+
+    flush_group()
+    return pos
+
+
 def build_inputs(args, device):
     if args.phones:
         tokens = args.phones.strip().split()
@@ -151,10 +177,16 @@ def build_inputs(args, device):
     else:
         tokens = text_to_phone_tokens(args.text)
 
+    if args.boundary_sp:
+        if not tokens or tokens[0] != "SP":
+            tokens = ["SP"] + tokens
+        if tokens[-1] != "SP":
+            tokens = tokens + ["SP"]
+
     phone_ids = phone_tokens_to_ids(tokens)
     pitch_ids = pitch_ids_from_tokens(tokens)
     note_dur = [0] * len(phone_ids)
-    pos = [1.0] * len(phone_ids)
+    pos = pos_from_tokens(tokens) if args.syllable_pos else [1.0] * len(phone_ids)
 
     pho = torch.LongTensor(phone_ids).unsqueeze(0).to(device)
     pho_lengths = torch.LongTensor([len(phone_ids)]).to(device)
@@ -268,14 +300,17 @@ def main():
     parser.add_argument("--phones", default="", help='可选：直接输入音素，例如: "w uo3 x i3 h uan1 n i3"')
     parser.add_argument("--config", default=None, help="config.json；默认优先用 --model-dir/config.json")
     parser.add_argument("--checkpoint", default=None, help="G_*.pth；不填则自动取 --model-dir 下最新的 G_*.pth")
-    parser.add_argument("--model-dir", default="logs/unisyn_svs_first_edit2")
+    parser.add_argument("--model-dir", default="logs/unisyn_base_svs_3")
     parser.add_argument("--out", default="free_tts.wav")
     parser.add_argument("--spk", type=int, default=0)
     parser.add_argument("--style", type=int, default=0, help="TTS 固定用 0")
-    parser.add_argument("--noise-scale", type=float, default=0.3)
-    parser.add_argument("--length-scale", type=float, default=1.0)
+    parser.add_argument("--noise-scale", type=float, default=0.15)
+    parser.add_argument("--length-scale", type=float, default=1.25)
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--free-duration", action="store_true", default=True)
+    parser.add_argument("--syllable-pos", action="store_true", help="Use syllable-internal pos for future checkpoints trained with syllable pos.")
+    parser.add_argument("--no-boundary-sp", dest="boundary_sp", action="store_false")
+    parser.set_defaults(boundary_sp=True)
     args = parser.parse_args()
 
     if args.device == "cuda" and not torch.cuda.is_available():

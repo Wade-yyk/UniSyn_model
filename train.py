@@ -1,4 +1,5 @@
 import os
+import glob
 import json
 import argparse
 import itertools
@@ -94,13 +95,29 @@ def run(rank, n_gpus, hps):
         seed=hps.train.seed
   )
   collate_fn = UniSynTextAudioCollate()
-  train_loader = DataLoader(train_dataset, num_workers=0, shuffle=False, pin_memory=False,
-      collate_fn=collate_fn, batch_sampler=train_sampler)
+  train_loader = DataLoader(
+      train_dataset,
+      num_workers=4,
+      shuffle=False,
+      pin_memory=True,
+      persistent_workers=True,
+      prefetch_factor=2,
+      collate_fn=collate_fn,
+      batch_sampler=train_sampler
+  )
   if rank == 0:
     eval_dataset = UniSynTextAudioLoader(hps.data.validation_files, hps.data)
-    eval_loader = DataLoader(eval_dataset, num_workers=0, shuffle=False,
-        batch_size=hps.train.batch_size, pin_memory=False,
-        drop_last=False, collate_fn=collate_fn)
+    eval_loader = DataLoader(
+        eval_dataset,
+        num_workers=4,
+        shuffle=False,
+        batch_size=hps.train.batch_size,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+        drop_last=False,
+        collate_fn=collate_fn
+    )
 
   vocab_size = max(phone_to_id.values()) + 1 
   current_spks = getattr(hps.data, 'n_speakers', 1)
